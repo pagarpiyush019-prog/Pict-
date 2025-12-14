@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Finance AI Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .test-section {
+            background: #f5f5f5;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .result {
+            background: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #007bff;
+            white-space: pre-wrap;
+        }
+        .error {
+            border-left-color: #dc3545;
+            color: #dc3545;
+        }
+        .success {
+            border-left-color: #28a745;
+        }
+        input {
+            padding: 10px;
+            width: 100%;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤖 Finance AI Chatbot Test</h1>
+    
+    <div class="test-section">
+        <h2>1. Server Health Check</h2>
+        <button onclick="testHealth()">Test Health Endpoint</button>
+        <div id="health-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. Test Chat</h2>
+        <input type="text" id="chatInput" placeholder="Type your question..." value="How can I save money?">
+        <button onclick="testChat()">Send to AI</button>
+        <div id="chat-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. Server Status</h2>
+        <p><strong>AI Server:</strong> <span id="ai-status">Checking...</span></p>
+        <p><strong>React App:</strong> <span id="react-status">Running on http://localhost:4028</span></p>
+    </div>
+
+    <script>
+        async function testHealth() {
+            const resultDiv = document.getElementById('health-result');
+            resultDiv.innerHTML = '<div class="result">Testing...</div>';
+            
+            try {
+                const response = await fetch('http://localhost:5000/health');
+                const data = await response.json();
+                resultDiv.innerHTML = `<div class="result success">
+✅ Server is running!
+Status: ${data.status}
+Model Loaded: ${data.model_loaded}
+Device: ${data.device}
+                </div>`;
+                document.getElementById('ai-status').innerHTML = '✅ Online';
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result error">❌ Error: ${error.message}</div>`;
+                document.getElementById('ai-status').innerHTML = '❌ Offline';
+            }
+        }
+
+        async function testChat() {
+            const resultDiv = document.getElementById('chat-result');
+            const input = document.getElementById('chatInput').value;
+            
+            resultDiv.innerHTML = '<div class="result">Sending to AI...</div>';
+            
+            try {
+                const response = await fetch('http://localhost:5000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: input,
+                        context: {
+                            income: 60000,
+                            balance: 125420,
+                            budgets: [
+                                { category: 'Food', limit: 10000, spent: 8500 },
+                                { category: 'Transport', limit: 4000, spent: 3200 }
+                            ],
+                            recent_transactions: [
+                                { amount: 450, merchant: 'Swiggy', category: 'Food' },
+                                { amount: 1200, merchant: 'Amazon', category: 'Shopping' }
+                            ]
+                        }
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server responded with status ${response.status}`);
+                }
+
+                const data = await response.json();
+                resultDiv.innerHTML = `<div class="result success">
+<strong>Your Question:</strong> ${input}
+
+<strong>AI Response:</strong>
+${data.response}
+                </div>`;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result error">
+❌ Error: ${error.message}
+
+Make sure:
+1. AI server is running (python finance_ai_server.py)
+2. Server is on http://localhost:5000
+3. CORS is enabled
+                </div>`;
+            }
+        }
+
+        // Auto-test health on load
+        window.onload = () => {
+            testHealth();
+        };
+    </script>
+</body>
+</html>

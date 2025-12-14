@@ -1,0 +1,771 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import Icon from '../../components/AppIcon';
+import { Line, Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+} from 'chart.js';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+);
+
+const PaperTrading = () => {
+  const [virtualBalance, setVirtualBalance] = useState(100000); // Starting with ₹1L
+  const [portfolioValue, setPortfolioValue] = useState(100000);
+  const [selectedStock, setSelectedStock] = useState(null);
+  const [tradeType, setTradeType] = useState('buy'); // 'buy' or 'sell'
+  const [orderType, setOrderType] = useState('market'); // 'market' or 'limit'
+  const [quantity, setQuantity] = useState('');
+  const [limitPrice, setLimitPrice] = useState('');
+  const [portfolio, setPortfolio] = useState([]);
+  const [tradingHistory, setTradingHistory] = useState([]);
+  const [performanceData, setPerformanceData] = useState([]);
+  
+  // TradingView-style features
+  const [chartType, setChartType] = useState('candlestick'); // 'candlestick', 'line', 'area', 'bar'
+  const [timeframe, setTimeframe] = useState('1D'); // '1m', '5m', '15m', '1H', '1D', '1W', '1M'
+  const [showIndicators, setShowIndicators] = useState({ sma: false, ema: false, rsi: false, volume: true });
+  const [watchlist, setWatchlist] = useState([]);
+  const [candlestickData, setCandlestickData] = useState([]);
+  const [theme, setTheme] = useState('dark'); // 'dark' or 'light'
+  const [leftPanelTab, setLeftPanelTab] = useState('watchlist'); // 'watchlist', 'orders', 'positions'
+  const [rightPanelTab, setRightPanelTab] = useState('buy'); // 'buy', 'sell'
+  const [bottomPanelTab, setBottomPanelTab] = useState('positions'); // 'positions', 'orders', 'history'
+
+  const availableStocks = [
+    { symbol: 'RELIANCE', name: 'Reliance Industries', price: 2580.50, change: 45.20, changePercent: 1.78 },
+    { symbol: 'INFY', name: 'Infosys Ltd', price: 1520.75, change: 23.50, changePercent: 1.57 },
+    { symbol: 'HDFCBANK', name: 'HDFC Bank', price: 1720.30, change: -12.40, changePercent: -0.72 },
+    { symbol: 'TCS', name: 'TCS', price: 3550.80, change: 28.90, changePercent: 0.82 },
+    { symbol: 'ICICIBANK', name: 'ICICI Bank', price: 985.60, change: 15.30, changePercent: 1.58 },
+    { symbol: 'SBIN', name: 'State Bank of India', price: 625.40, change: -8.20, changePercent: -1.29 },
+    { symbol: 'BHARTIARTL', name: 'Bharti Airtel', price: 1125.90, change: 18.70, changePercent: 1.69 },
+    { symbol: 'HINDUNILVR', name: 'Hindustan Unilever', price: 2450.20, change: 12.50, changePercent: 0.51 }
+  ];
+
+  const [liveStocks, setLiveStocks] = useState(availableStocks);
+
+  // Simulate live price updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setLiveStocks(prev => prev.map(stock => {
+        const variation = (Math.random() - 0.5) * 0.02; // ±1% variation
+        const newPrice = stock.price * (1 + variation);
+        const change = newPrice - stock.price;
+        return {
+          ...stock,
+          price: parseFloat(newPrice.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(((change / stock.price) * 100).toFixed(2))
+        };
+      }));
+
+      // Update portfolio value
+      const totalValue = portfolio.reduce((sum, holding) => {
+        const currentStock = liveStocks.find(s => s.symbol === holding.symbol);
+        return sum + (currentStock?.price || holding.avgPrice) * holding.quantity;
+      }, 0);
+      setPortfolioValue(totalValue + virtualBalance);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [portfolio, virtualBalance, liveStocks]);
+
+  // Initialize performance data
+  useEffect(() => {
+    const initialData = Array.from({ length: 30 }, (_, i) => ({
+      date: new Date(Date.now() - (29 - i) * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+      value: 100000
+    }));
+    setPerformanceData(initialData);
+  }, []);
+
+  const calculateTradeDetails = () => {
+    if (!selectedStock || !quantity || isNaN(quantity) || Number(quantity) <= 0) {
+      return null;
+    }
+
+    const qty = Number(quantity);
+    const price = orderType === 'market' 
+      ? (liveStocks.find(s => s.symbol === selectedStock.symbol)?.price || selectedStock.price)
+      : parseFloat(limitPrice) || selectedStock.price;
+    const totalValue = qty * price;
+    
+    // 1. Brokerage: Delivery (CNC) = ₹0 (Zerodha/Upstox style), Intraday = ₹20 max
+    const isDelivery = true; // Delivery trading
+    const brokerage = isDelivery ? 0 : Math.min(20, totalValue * 0.001); // Intraday: max ₹20
+    
+    // 2. STT: Only on SELL side, 0.1% of sell value for delivery
+    const stt = tradeType === 'sell' ? totalValue * 0.001 : 0; // 0.1% on sell
+    
+    // 3. Exchange Transaction Charges: NSE equity delivery = 0.00345%
+    const transactionCharges = totalValue * 0.0000345;
+    
+    // 4. SEBI Charges: Very tiny (₹10 per ₹10 crore turnover)
+    const sebiCharges = Math.max(0.01, totalValue * 0.0000001); // Minimum ₹0.01
+    
+    // 5. GST: 18% on (Brokerage + Exchange Charges + SEBI Charges)
+    const gst = (brokerage + transactionCharges + sebiCharges) * 0.18;
+    
+    // 6. Stamp Duty: Only on BUY side, 0.015% on delivery buys
+    const stampDuty = tradeType === 'buy' ? totalValue * 0.00015 : 0; // 0.015% on buy
+    
+    // 7. DP Charges: Only on SELL side, ₹13.5-₹18 per sell day (flat)
+    const dpCharges = tradeType === 'sell' ? 15.75 : 0; // ₹13.5-₹18 average = ₹15.75
+    
+    const totalCharges = brokerage + stt + stampDuty + transactionCharges + gst + sebiCharges + dpCharges;
+    const netAmount = tradeType === 'buy' 
+      ? totalValue + totalCharges  // Buy: add charges
+      : totalValue - totalCharges;  // Sell: subtract charges
+
+    return { 
+      quantity: qty, 
+      price, 
+      totalValue, 
+      brokerage,
+      stt,
+      stampDuty,
+      transactionCharges,
+      gst,
+      sebiCharges,
+      dpCharges,
+      totalCharges, 
+      netAmount 
+    };
+  };
+
+  const handleBuy = () => {
+    const tradeDetails = calculateTradeDetails();
+    if (!tradeDetails) return;
+
+    // Calculate charges for BUY
+    const totalValue = tradeDetails.totalValue;
+    const brokerage = 0; // Delivery = ₹0
+    const stampDuty = totalValue * 0.00015; // 0.015% on buy
+    const transactionCharges = totalValue * 0.0000345;
+    const sebiCharges = Math.max(0.01, totalValue * 0.0000001);
+    const gst = (brokerage + transactionCharges + sebiCharges) * 0.18;
+    const totalCharges = brokerage + stampDuty + transactionCharges + gst + sebiCharges;
+    const netAmount = totalValue + totalCharges;
+
+    if (netAmount > virtualBalance) {
+      alert('Insufficient virtual balance!');
+      return;
+    }
+
+    const stock = liveStocks.find(s => s.symbol === selectedStock.symbol);
+    const existingHolding = portfolio.find(h => h.symbol === selectedStock.symbol);
+
+    if (existingHolding) {
+      // Update existing holding
+      const newQuantity = existingHolding.quantity + tradeDetails.quantity;
+      const newAvgPrice = ((existingHolding.avgPrice * existingHolding.quantity) + (tradeDetails.price * tradeDetails.quantity)) / newQuantity;
+      setPortfolio(prev => prev.map(h => 
+        h.symbol === selectedStock.symbol 
+          ? { ...h, quantity: newQuantity, avgPrice: newAvgPrice }
+          : h
+      ));
+    } else {
+      // Add new holding
+      setPortfolio(prev => [...prev, {
+        symbol: selectedStock.symbol,
+        name: stock.name,
+        quantity: tradeDetails.quantity,
+        avgPrice: tradeDetails.price,
+        currentPrice: stock.price
+      }]);
+    }
+
+    setVirtualBalance(prev => prev - netAmount);
+    setTradingHistory(prev => [{
+      id: Date.now(),
+      type: 'BUY',
+      symbol: selectedStock.symbol,
+      quantity: tradeDetails.quantity,
+      price: tradeDetails.price,
+      amount: netAmount,
+      timestamp: new Date().toISOString()
+    }, ...prev]);
+
+    // Update performance data
+    const newValue = portfolioValue - netAmount + (tradeDetails.quantity * stock.price);
+    setPerformanceData(prev => [...prev.slice(-29), { date: new Date().toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }), value: newValue }]);
+
+    setQuantity('');
+    setLimitPrice('');
+    setSelectedStock(null);
+  };
+
+  const handleSell = () => {
+    const tradeDetails = calculateTradeDetails();
+    if (!tradeDetails) return;
+
+    const holding = portfolio.find(h => h.symbol === selectedStock.symbol);
+    if (!holding || holding.quantity < tradeDetails.quantity) {
+      alert('Insufficient shares to sell!');
+      return;
+    }
+
+    // Calculate charges for SELL
+    const totalValue = tradeDetails.quantity * tradeDetails.price;
+    const brokerage = 0; // Delivery = ₹0
+    const stt = totalValue * 0.001; // 0.1% on sell (delivery)
+    const transactionCharges = totalValue * 0.0000345;
+    const sebiCharges = Math.max(0.01, totalValue * 0.0000001);
+    const gst = (brokerage + transactionCharges + sebiCharges) * 0.18;
+    const dpCharges = 15.75; // ₹13.5-₹18 average = ₹15.75 (only on sell)
+    const totalCharges = brokerage + stt + transactionCharges + gst + sebiCharges + dpCharges;
+    const netProceeds = totalValue - totalCharges;
+    const profit = (tradeDetails.price - holding.avgPrice) * tradeDetails.quantity - totalCharges;
+
+    if (holding.quantity === tradeDetails.quantity) {
+      setPortfolio(prev => prev.filter(h => h.symbol !== selectedStock.symbol));
+    } else {
+      setPortfolio(prev => prev.map(h => 
+        h.symbol === selectedStock.symbol 
+          ? { ...h, quantity: h.quantity - tradeDetails.quantity }
+          : h
+      ));
+    }
+
+    setVirtualBalance(prev => prev + netProceeds);
+    setTradingHistory(prev => [{
+      id: Date.now(),
+      type: 'SELL',
+      symbol: selectedStock.symbol,
+      quantity: tradeDetails.quantity,
+      price: tradeDetails.price,
+      amount: netProceeds,
+      profit: profit,
+      timestamp: new Date().toISOString()
+    }, ...prev]);
+
+    // Update performance data
+    const newValue = portfolioValue + netProceeds;
+    setPerformanceData(prev => [...prev.slice(-29), { date: new Date().toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }), value: newValue }]);
+
+    setQuantity('');
+    setLimitPrice('');
+    setSelectedStock(null);
+  };
+
+  const tradeDetails = calculateTradeDetails();
+  const totalPnL = portfolio.reduce((sum, holding) => {
+    const currentStock = liveStocks.find(s => s.symbol === holding.symbol);
+    if (!currentStock) return sum;
+    return sum + (currentStock.price - holding.avgPrice) * holding.quantity;
+  }, 0);
+  const totalReturn = ((portfolioValue - 100000) / 100000) * 100;
+
+  const chartData = {
+    labels: performanceData.map(d => d.date),
+    datasets: [
+      {
+        label: 'Portfolio Value',
+        data: performanceData.map(d => d.value),
+        borderColor: '#10B981',
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0
+      }
+    ]
+  };
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: function(context) {
+            return '₹' + context.parsed.y.toLocaleString('en-IN');
+          }
+        }
+      }
+    },
+    scales: {
+      x: { display: true, grid: { display: false } },
+      y: {
+        display: true,
+        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+        ticks: {
+          callback: function(value) {
+            return '₹' + (value / 1000).toFixed(0) + 'K';
+          }
+        }
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between bg-gradient-to-r from-indigo-50 via-purple-50 to-pink-50 dark:from-gray-800 dark:via-gray-900 dark:to-gray-800 rounded-2xl p-6 border-2 border-indigo-100 dark:border-gray-700 shadow-xl">
+        <div className="flex items-center gap-3 mb-4 lg:mb-0">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg">
+            <Icon name="PlayCircle" size={26} className="text-white" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Paper Trading</h1>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Practice trading with virtual money - No risk, real learning</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-3 py-1.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+            <span className="w-2 h-2 bg-emerald-600 rounded-full animate-pulse"></span>
+            Live Prices
+          </span>
+        </div>
+      </div>
+
+      {/* Portfolio Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl p-6 text-white shadow-xl">
+          <div className="flex items-center justify-between mb-2">
+            <Icon name="Wallet" size={24} className="opacity-80" />
+            <span className="text-xs font-semibold bg-white/20 px-2 py-1 rounded-full">Virtual Balance</span>
+          </div>
+          <p className="text-3xl font-bold">₹{Math.round(virtualBalance).toLocaleString('en-IN')}</p>
+          <p className="text-xs opacity-90 mt-1">Available to trade</p>
+        </div>
+
+        <div className="bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl p-6 text-white shadow-xl">
+          <div className="flex items-center justify-between mb-2">
+            <Icon name="TrendingUp" size={24} className="opacity-80" />
+            <span className="text-xs font-semibold bg-white/20 px-2 py-1 rounded-full">Portfolio Value</span>
+          </div>
+          <p className="text-3xl font-bold">₹{Math.round(portfolioValue).toLocaleString('en-IN')}</p>
+          <p className={`text-xs mt-1 ${totalReturn >= 0 ? 'opacity-90' : 'opacity-90'}`}>
+            {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}% return
+          </p>
+        </div>
+
+        <div className={`rounded-2xl p-6 text-white shadow-xl ${
+          totalPnL >= 0 
+            ? 'bg-gradient-to-br from-emerald-500 to-green-600' 
+            : 'bg-gradient-to-br from-red-500 to-rose-600'
+        }`}>
+          <div className="flex items-center justify-between mb-2">
+            <Icon name={totalPnL >= 0 ? "TrendingUp" : "TrendingDown"} size={24} className="opacity-80" />
+            <span className="text-xs font-semibold bg-white/20 px-2 py-1 rounded-full">Total P&L</span>
+          </div>
+          <p className="text-3xl font-bold">
+            {totalPnL >= 0 ? '+' : ''}₹{Math.round(totalPnL).toLocaleString('en-IN')}
+          </p>
+          <p className="text-xs opacity-90 mt-1">Unrealized gains/losses</p>
+        </div>
+
+        <div className="bg-gradient-to-br from-purple-500 to-pink-600 rounded-2xl p-6 text-white shadow-xl">
+          <div className="flex items-center justify-between mb-2">
+            <Icon name="Briefcase" size={24} className="opacity-80" />
+            <span className="text-xs font-semibold bg-white/20 px-2 py-1 rounded-full">Holdings</span>
+          </div>
+          <p className="text-3xl font-bold">{portfolio.length}</p>
+          <p className="text-xs opacity-90 mt-1">Active positions</p>
+        </div>
+      </div>
+
+      {/* Performance Chart */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
+        <div className="px-6 py-5 border-b-2 border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900 dark:to-gray-800">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg">
+              <Icon name="LineChart" size={20} className="text-white" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Portfolio Performance</h2>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">30-day virtual portfolio value</p>
+            </div>
+          </div>
+        </div>
+        <div className="p-6">
+          <div className="h-64">
+            <Line data={chartData} options={chartOptions} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Stock Selection & Trading */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
+          <div className="px-6 py-5 border-b-2 border-gray-100 dark:border-gray-700 bg-gradient-to-r from-blue-50 via-cyan-50 to-sky-50 dark:from-gray-900 dark:via-blue-900/20 dark:to-cyan-900/20">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-600 flex items-center justify-center shadow-lg">
+                <Icon name="TrendingUp" size={20} className="text-white" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 dark:text-white">Place Trade</h2>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">Buy or sell stocks with virtual money</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-6 space-y-4">
+            {/* Stock Selection */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Select Stock</label>
+              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                {liveStocks.map((stock) => (
+                  <button
+                    key={stock.symbol}
+                    onClick={() => setSelectedStock(stock)}
+                    className={`p-3 rounded-xl border-2 transition-all text-left ${
+                      selectedStock?.symbol === stock.symbol
+                        ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                    }`}
+                  >
+                    <p className="font-bold text-gray-900 dark:text-white text-sm">{stock.symbol}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{stock.name}</p>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-sm font-semibold text-gray-900 dark:text-white">₹{stock.price.toFixed(2)}</span>
+                      <span className={`text-xs font-semibold ${
+                        stock.changePercent >= 0 ? 'text-emerald-600' : 'text-red-600'
+                      }`}>
+                        {stock.changePercent >= 0 ? '+' : ''}{stock.changePercent.toFixed(2)}%
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {selectedStock && (
+              <>
+                <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded-xl">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-white">{selectedStock.symbol}</h3>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">{selectedStock.name}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-bold text-gray-900 dark:text-white">₹{selectedStock.price.toFixed(2)}</p>
+                      <p className={`text-sm font-semibold ${
+                        selectedStock.changePercent >= 0 ? 'text-emerald-600' : 'text-red-600'
+                      }`}>
+                        {selectedStock.change >= 0 ? '+' : ''}₹{selectedStock.change.toFixed(2)} ({selectedStock.changePercent >= 0 ? '+' : ''}{selectedStock.changePercent.toFixed(2)}%)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setTradeType('buy')}
+                    className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all ${
+                      tradeType === 'buy'
+                        ? 'bg-emerald-600 text-white shadow-lg'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <Icon name="ArrowUpCircle" size={18} className="inline mr-2" />
+                    Buy
+                  </button>
+                  <button
+                    onClick={() => setTradeType('sell')}
+                    className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all ${
+                      tradeType === 'sell'
+                        ? 'bg-red-600 text-white shadow-lg'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <Icon name="ArrowDownCircle" size={18} className="inline mr-2" />
+                    Sell
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Order Type</label>
+                  <select
+                    value={orderType}
+                    onChange={(e) => setOrderType(e.target.value)}
+                    className="w-full px-4 py-2.5 border-2 border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                  >
+                    <option value="market">Market Order</option>
+                    <option value="limit">Limit Order</option>
+                  </select>
+                </div>
+
+                {orderType === 'limit' && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Limit Price (₹)</label>
+                    <input
+                      type="number"
+                      value={limitPrice}
+                      onChange={(e) => setLimitPrice(e.target.value)}
+                      placeholder={selectedStock.price.toFixed(2)}
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Quantity</label>
+                  <input
+                    type="number"
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    placeholder="Enter quantity"
+                    min="1"
+                    className="w-full px-4 py-2.5 border-2 border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                  />
+                </div>
+
+                {tradeDetails && (
+                  <div className="p-4 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-900 rounded-xl border-2 border-gray-200 dark:border-gray-700">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600 dark:text-gray-400">Quantity</span>
+                        <span className="font-semibold text-gray-900 dark:text-white">{tradeDetails.quantity} shares</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600 dark:text-gray-400">Price per Share</span>
+                        <span className="font-semibold text-gray-900 dark:text-white">₹{tradeDetails.price.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600 dark:text-gray-400">Total Value</span>
+                        <span className="font-semibold text-gray-900 dark:text-white">₹{tradeDetails.totalValue.toFixed(2)}</span>
+                      </div>
+                      <div className="border-t border-gray-300 dark:border-gray-600 pt-3 mt-3 space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-500 dark:text-gray-400">Brokerage</span>
+                          <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.brokerage.toFixed(2)}</span>
+                        </div>
+                        {tradeDetails.stt > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span className="text-gray-500 dark:text-gray-400">STT</span>
+                            <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.stt.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {tradeDetails.stampDuty > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span className="text-gray-500 dark:text-gray-400">Stamp Duty</span>
+                            <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.stampDuty.toFixed(2)}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-500 dark:text-gray-400">Transaction Charges</span>
+                          <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.transactionCharges.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-500 dark:text-gray-400">GST (18%)</span>
+                          <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.gst.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-500 dark:text-gray-400">SEBI Charges</span>
+                          <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.sebiCharges.toFixed(2)}</span>
+                        </div>
+                        {tradeDetails.dpCharges > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span className="text-gray-500 dark:text-gray-400">DP Charges</span>
+                            <span className="text-gray-700 dark:text-gray-300">₹{tradeDetails.dpCharges.toFixed(2)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="border-t border-gray-300 dark:border-gray-600 pt-2 mt-2">
+                        <div className="flex justify-between mb-2">
+                          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Total Charges</span>
+                          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">₹{tradeDetails.totalCharges.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-base font-bold text-gray-900 dark:text-white">
+                            {tradeType === 'buy' ? 'Total Amount' : 'Net Proceeds'}
+                          </span>
+                          <span className={`text-base font-bold ${
+                            tradeType === 'buy' ? 'text-emerald-600' : 'text-red-600'
+                          }`}>
+                            ₹{tradeDetails.netAmount.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={tradeType === 'buy' ? handleBuy : handleSell}
+                  disabled={!tradeDetails || (tradeType === 'buy' && tradeDetails.netAmount > virtualBalance)}
+                  className={`w-full px-6 py-3.5 rounded-xl font-bold text-white transition-all shadow-lg ${
+                    tradeType === 'buy'
+                      ? 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700'
+                      : 'bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  {tradeType === 'buy' ? 'Place Buy Order' : 'Place Sell Order'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Portfolio Holdings */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
+          <div className="px-6 py-5 border-b-2 border-gray-100 dark:border-gray-700 bg-gradient-to-r from-emerald-50 via-teal-50 to-cyan-50 dark:from-gray-900 dark:via-emerald-900/20 dark:to-teal-900/20">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-600 to-teal-600 flex items-center justify-center shadow-lg">
+                <Icon name="Briefcase" size={20} className="text-white" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 dark:text-white">My Holdings</h2>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">{portfolio.length} positions</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-6">
+            {portfolio.length === 0 ? (
+              <div className="text-center py-12">
+                <Icon name="Briefcase" size={48} className="text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-500 dark:text-gray-400">No holdings yet. Start trading to build your portfolio!</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {portfolio.map((holding) => {
+                  const currentStock = liveStocks.find(s => s.symbol === holding.symbol);
+                  const currentPrice = currentStock?.price || holding.avgPrice;
+                  const pnl = (currentPrice - holding.avgPrice) * holding.quantity;
+                  const pnlPercent = ((currentPrice - holding.avgPrice) / holding.avgPrice) * 100;
+                  const totalValue = currentPrice * holding.quantity;
+
+                  return (
+                    <div key={holding.symbol} className="p-4 bg-gray-50 dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600">
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <h3 className="font-bold text-gray-900 dark:text-white">{holding.symbol}</h3>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{holding.name}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-semibold text-gray-900 dark:text-white">₹{currentPrice.toFixed(2)}</p>
+                          <p className={`text-xs font-semibold ${pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {pnl >= 0 ? '+' : ''}{pnlPercent.toFixed(2)}%
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div>
+                          <p className="text-gray-500 dark:text-gray-400">Quantity</p>
+                          <p className="font-semibold text-gray-900 dark:text-white">{holding.quantity}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 dark:text-gray-400">Avg Price</p>
+                          <p className="font-semibold text-gray-900 dark:text-white">₹{holding.avgPrice.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 dark:text-gray-400">P&L</p>
+                          <p className={`font-semibold ${pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {pnl >= 0 ? '+' : ''}₹{Math.round(pnl).toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-600">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-500 dark:text-gray-400">Total Value</span>
+                          <span className="font-bold text-gray-900 dark:text-white">₹{Math.round(totalValue).toLocaleString('en-IN')}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Trading History */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
+        <div className="px-6 py-5 border-b-2 border-gray-100 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900 dark:to-gray-800">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-600 to-orange-600 flex items-center justify-center shadow-lg">
+              <Icon name="History" size={20} className="text-white" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Trading History</h2>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">All your virtual trades</p>
+            </div>
+          </div>
+        </div>
+        <div className="p-6">
+          {tradingHistory.length === 0 ? (
+            <div className="text-center py-8">
+              <Icon name="FileText" size={40} className="text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+              <p className="text-gray-500 dark:text-gray-400">No trades yet. Start trading to see your history!</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b-2 border-gray-200 dark:border-gray-700">
+                    <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Date/Time</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Type</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Symbol</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-900 dark:text-white">Quantity</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-900 dark:text-white">Price</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-900 dark:text-white">Amount</th>
+                    {tradingHistory.some(t => t.profit !== undefined) && (
+                      <th className="text-right py-3 px-4 font-semibold text-gray-900 dark:text-white">P&L</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tradingHistory.map((trade) => (
+                    <tr key={trade.id} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
+                      <td className="py-3 px-4 text-sm text-gray-600 dark:text-gray-400">
+                        {new Date(trade.timestamp).toLocaleString('en-IN', { 
+                          month: 'short', 
+                          day: 'numeric', 
+                          hour: '2-digit', 
+                          minute: '2-digit' 
+                        })}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                          trade.type === 'BUY' 
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                            : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                        }`}>
+                          {trade.type}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-semibold text-gray-900 dark:text-white">{trade.symbol}</td>
+                      <td className="py-3 px-4 text-right text-sm text-gray-900 dark:text-white">{trade.quantity}</td>
+                      <td className="py-3 px-4 text-right text-sm text-gray-900 dark:text-white">₹{trade.price.toFixed(2)}</td>
+                      <td className="py-3 px-4 text-right text-sm font-semibold text-gray-900 dark:text-white">₹{Math.round(trade.amount).toLocaleString('en-IN')}</td>
+                      {trade.profit !== undefined && (
+                        <td className={`py-3 px-4 text-right text-sm font-bold ${
+                          trade.profit >= 0 ? 'text-emerald-600' : 'text-red-600'
+                        }`}>
+                          {trade.profit >= 0 ? '+' : ''}₹{Math.round(trade.profit).toLocaleString('en-IN')}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PaperTrading;
+
